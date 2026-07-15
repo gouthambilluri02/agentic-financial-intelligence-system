@@ -1,21 +1,33 @@
 from fastapi import APIRouter
-from backend.app.schemas.query import QueryRequest
-from backend.app.agents.financial_agent import FinancialAgent
 
-router = APIRouter(
-    prefix="/api/v1",
-    tags=["Query"],
+from backend.app.agents.financial_agent import FinancialAgent
+from backend.app.schemas.query import (
+    QueryRequest,
+    QueryResponse,
 )
 
 
-@router.post("/query")
-def ask_question(request: QueryRequest):
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["Financial Query"],
+)
 
-    agent = FinancialAgent()
+financial_agent = FinancialAgent()
 
-    answer = agent.process_question(request.question)
 
-    return {
-        "question": request.question,
-        "answer": answer
-    }
+@router.post(
+    "/query",
+    response_model=QueryResponse,
+)
+def ask_financial_question(
+    request: QueryRequest,
+) -> QueryResponse:
+    result = financial_agent.process_question(
+        request.question
+    )
+
+    return QueryResponse(
+        question=request.question,
+        answer=result["answer"],
+        sources=result["sources"],
+    )
