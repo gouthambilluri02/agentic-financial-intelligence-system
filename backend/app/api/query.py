@@ -29,5 +29,8 @@ def ask_financial_question(
     return QueryResponse(
         question=request.question,
         answer=result["answer"],
+        detected_companies=result[
+            "detected_companies"
+        ],
         sources=result["sources"],
     )
