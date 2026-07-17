@@ -1,12 +1,22 @@
+from typing import Any
+
 import ollama
 
 from backend.app.services.company_detector import CompanyDetector
 from backend.app.services.conversation_memory import ConversationMemory
+from backend.app.services.deterministic_response_builder import (
+    DeterministicResponseBuilder,
+)
+from backend.app.services.execution_planner import ExecutionPlanner
 from backend.app.services.financial_metrics import FinancialMetricDetector
 from backend.app.services.intent_detector import IntentDetector
 from backend.app.services.prompt_builder import PromptBuilder
-from backend.app.services.query_planner import QueryPlanner
-from backend.app.services.retrieval_service import RetrievalService
+from backend.app.services.retrieval_orchestrator import (
+    RetrievalOrchestrator,
+)
+from backend.app.services.tool_executor import ToolExecutor
+from backend.app.services.tool_router import ToolRouter
+from backend.app.tools.tool_registry import ToolRegistry
 
 
 OLLAMA_MODEL = "qwen2.5:7b"
@@ -14,102 +24,277 @@ OLLAMA_MODEL = "qwen2.5:7b"
 
 class FinancialAgent:
     """
-    Coordinate the complete financial intelligence workflow.
+    Main orchestrator for the Agentic Financial Intelligence System.
 
-    Responsibilities:
-    - Detect companies
-    - Detect user intent
-    - Detect requested financial metrics
-    - Resolve conversation context
-    - Build an execution plan
-    - Retrieve relevant report chunks
-    - Build an intent-specific prompt
-    - Generate a grounded answer with Ollama
-    - Return verified source references
-    - Update conversation memory
+    Workflow:
+    1. Detect companies, intent, and financial metric.
+    2. Resolve conversation memory.
+    3. Select the primary tool.
+    4. Retrieve relevant financial-report evidence.
+    5. Create a multi-tool execution plan.
+    6. Execute every planned tool.
+    7. Extract deterministic tool results.
+    8. Return deterministic calculation and comparison answers.
+    9. Use structured risk-tool evidence for risk questions.
+    10. Use Ollama for narrative report questions.
     """
 
     def __init__(self) -> None:
         self.company_detector = CompanyDetector()
         self.intent_detector = IntentDetector()
         self.metric_detector = FinancialMetricDetector()
-        self.query_planner = QueryPlanner()
+
+        self.tool_router = ToolRouter()
+        self.tool_registry = ToolRegistry()
+        self.execution_planner = ExecutionPlanner()
+
+        self.tool_executor = ToolExecutor(
+            tool_registry=self.tool_registry
+        )
+
+        self.retrieval_orchestrator = RetrievalOrchestrator(
+            max_retries=1
+        )
+
         self.prompt_builder = PromptBuilder()
-        self.retrieval_service = RetrievalService()
+
+        self.deterministic_response_builder = (
+            DeterministicResponseBuilder()
+        )
+
         self.memory = ConversationMemory()
 
-    def process_question(self, question: str) -> dict:
+    def process_question(
+        self,
+        question: str,
+    ) -> dict[str, Any]:
         """
         Process one financial question through the complete
-        agentic RAG workflow.
+        agentic workflow.
         """
 
-        # Detect companies explicitly mentioned in the current question.
-        newly_detected_companies = (
-            self.company_detector.detect_companies(question)
+        if not isinstance(question, str):
+            return self._empty_question_response()
+
+        cleaned_question = question.strip()
+
+        if not cleaned_question:
+            return self._empty_question_response()
+
+        detected_companies = (
+            self.company_detector.detect_companies(
+                cleaned_question
+            )
         )
 
-        # Detect the current question's primary task.
-        newly_detected_intent = (
-            self.intent_detector.detect_intent(question)
+        detected_intent = (
+            self.intent_detector.detect_intent(
+                cleaned_question
+            )
         )
 
-        # Detect whether the question asks for a financial metric.
-        detected_metric = self.metric_detector.detect_metric(
-            question
+        detected_metric = (
+            self.metric_detector.detect_metric(
+                cleaned_question
+            )
         )
 
-        # Use current companies when available.
-        # Otherwise, reuse companies from conversation memory.
         resolved_companies = self._resolve_companies(
-            newly_detected_companies
+            detected_companies
         )
 
-        # Use the current intent unless the question is vague.
-        # For vague follow-ups, reuse the previous intent.
         resolved_intent = self._resolve_intent(
-            newly_detected_intent
+            detected_intent
         )
 
-        # Build a plan that controls retrieval behavior.
-        plan = self.query_planner.build_plan(
-            question=question,
-            companies=resolved_companies,
+        selected_tool = self.tool_router.select_tool(
+            question=cleaned_question,
             intent=resolved_intent,
             metric=detected_metric,
+            companies=resolved_companies,
         )
 
-        # Execute the retrieval strategy from the plan.
-        retrieved_chunks = self._retrieve_context(
-            question=plan["question"],
-            companies=plan["companies"],
-            top_k=plan["top_k"],
+        retrieval_result = (
+            self.retrieval_orchestrator.retrieve(
+                question=cleaned_question,
+                companies=resolved_companies,
+                intent=resolved_intent,
+                metric=detected_metric,
+            )
+        )
+
+        retrieved_chunks = retrieval_result.get(
+            "chunks",
+            [],
+        )
+
+        retrieval_plan = retrieval_result.get(
+            "plan",
+            {},
+        )
+
+        retry_performed = retrieval_result.get(
+            "retry_performed",
+            False,
+        )
+
+        retry_count = retrieval_result.get(
+            "retry_count",
+            0,
+        )
+
+        retrieval_sufficient = retrieval_result.get(
+            "retrieval_sufficient",
+            False,
+        )
+
+        execution_plan = (
+            self.execution_planner.create_plan(
+                selected_tool=selected_tool,
+                intent=resolved_intent,
+                companies=resolved_companies,
+            )
+        )
+
+        execution_result = (
+            self.tool_executor.execute_plan(
+                execution_plan=execution_plan,
+                question=cleaned_question,
+                metric=detected_metric,
+                companies=resolved_companies,
+                retrieved_chunks=retrieved_chunks,
+            )
+        )
+
+        calculation_result = (
+            self._extract_calculation_result(
+                execution_result
+            )
+        )
+
+        comparison_result = (
+            self._extract_comparison_result(
+                execution_result
+            )
+        )
+
+        risk_result = (
+            self._extract_risk_result(
+                execution_result
+            )
+        )
+
+        sources = self._extract_sources(
+            retrieved_chunks
         )
 
         if not retrieved_chunks:
-            self.memory.update(
-                question=question,
+            self._update_memory(
+                question=cleaned_question,
                 companies=resolved_companies,
                 intent=resolved_intent,
             )
 
-            return {
-                "answer": (
-                    "I could not find relevant information in the "
-                    "available financial reports."
+            return self._build_response(
+                answer=(
+                    "I could not find relevant information in "
+                    "the available financial reports."
                 ),
-                "sources": [],
-                "detected_companies": resolved_companies,
-                "detected_intent": resolved_intent,
-                "detected_metric": detected_metric,
-                "plan": plan,
-            }
+                sources=[],
+                calculation=calculation_result,
+                comparison=comparison_result,
+                risk_analysis=risk_result,
+                selected_tool=selected_tool,
+                execution_plan=execution_plan,
+                execution_result=execution_result,
+                companies=resolved_companies,
+                intent=resolved_intent,
+                metric=detected_metric,
+                retrieval_plan=retrieval_plan,
+                retry_performed=retry_performed,
+                retry_count=retry_count,
+                retrieval_sufficient=False,
+                deterministic_answer_used=False,
+            )
 
-        context = self._build_context(
-            retrieved_chunks
+        deterministic_answer = (
+            self.deterministic_response_builder.build_answer(
+                selected_tool=selected_tool,
+                calculation=calculation_result,
+                comparison=comparison_result,
+            )
         )
 
-        sources = self._extract_sources(
+        if deterministic_answer is not None:
+            self._update_memory(
+                question=cleaned_question,
+                companies=resolved_companies,
+                intent=resolved_intent,
+            )
+
+            return self._build_response(
+                answer=deterministic_answer,
+                sources=sources,
+                calculation=calculation_result,
+                comparison=comparison_result,
+                risk_analysis=risk_result,
+                selected_tool=selected_tool,
+                execution_plan=execution_plan,
+                execution_result=execution_result,
+                companies=resolved_companies,
+                intent=resolved_intent,
+                metric=detected_metric,
+                retrieval_plan=retrieval_plan,
+                retry_performed=retry_performed,
+                retry_count=retry_count,
+                retrieval_sufficient=retrieval_sufficient,
+                deterministic_answer_used=True,
+            )
+
+        if (
+            selected_tool == "risk_analysis"
+            and isinstance(risk_result, dict)
+            and risk_result.get("success")
+        ):
+            risk_answer = self._generate_risk_answer(
+                question=cleaned_question,
+                risk_result=risk_result,
+            )
+
+            risk_sources = risk_result.get(
+                "sources",
+                [],
+            )
+
+            if not isinstance(risk_sources, list):
+                risk_sources = []
+
+            self._update_memory(
+                question=cleaned_question,
+                companies=resolved_companies,
+                intent=resolved_intent,
+            )
+
+            return self._build_response(
+                answer=risk_answer,
+                sources=risk_sources or sources,
+                calculation=calculation_result,
+                comparison=comparison_result,
+                risk_analysis=risk_result,
+                selected_tool=selected_tool,
+                execution_plan=execution_plan,
+                execution_result=execution_result,
+                companies=resolved_companies,
+                intent=resolved_intent,
+                metric=detected_metric,
+                retrieval_plan=retrieval_plan,
+                retry_performed=retry_performed,
+                retry_count=retry_count,
+                retrieval_sufficient=retrieval_sufficient,
+                deterministic_answer_used=False,
+            )
+
+        report_context = self._build_context(
             retrieved_chunks
         )
 
@@ -119,91 +304,390 @@ class FinancialAgent:
             )
         )
 
-        user_prompt = self.prompt_builder.build_user_prompt(
-            question=question,
-            context=context,
-            detected_companies=resolved_companies,
-            intent=resolved_intent,
+        user_prompt = (
+            self.prompt_builder.build_user_prompt(
+                question=cleaned_question,
+                context=report_context,
+                detected_companies=resolved_companies,
+                intent=resolved_intent,
+            )
         )
 
-        # Add previous-turn context when available.
-        previous_question = self.memory.get_last_question()
+        user_prompt = self._add_agent_diagnostics(
+            user_prompt=user_prompt,
+            selected_tool=selected_tool,
+            execution_plan=execution_plan,
+            detected_metric=detected_metric,
+        )
 
-        if previous_question:
+        user_prompt = self._add_multi_tool_context(
+            user_prompt=user_prompt,
+            execution_result=execution_result,
+        )
+
+        if not retrieval_sufficient:
             user_prompt = (
-                "Previous user question:\n"
-                f"{previous_question}\n\n"
-                "Current request and retrieved context:\n"
+                "IMPORTANT RETRIEVAL LIMITATION\n"
+                "The available financial-report context may be "
+                "incomplete. Clearly identify missing information. "
+                "Do not invent facts, dates, financial values, "
+                "calculations, or sources.\n\n"
                 f"{user_prompt}"
             )
 
-        response = ollama.chat(
-            model=OLLAMA_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": user_prompt,
-                },
-            ],
+        user_prompt = self._add_conversation_context(
+            user_prompt
         )
 
-        answer = response["message"]["content"]
+        try:
+            response = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    },
+                ],
+            )
 
-        # Save the current turn for future follow-up questions.
-        self.memory.update(
-            question=question,
+            answer = self._extract_llm_answer(
+                response
+            )
+
+        except Exception as error:
+            answer = (
+                "The financial information was retrieved, but the "
+                "language model could not generate the final "
+                f"explanation. Reason: {error}"
+            )
+
+        self._update_memory(
+            question=cleaned_question,
             companies=resolved_companies,
             intent=resolved_intent,
         )
 
+        return self._build_response(
+            answer=answer,
+            sources=sources,
+            calculation=calculation_result,
+            comparison=comparison_result,
+            risk_analysis=risk_result,
+            selected_tool=selected_tool,
+            execution_plan=execution_plan,
+            execution_result=execution_result,
+            companies=resolved_companies,
+            intent=resolved_intent,
+            metric=detected_metric,
+            retrieval_plan=retrieval_plan,
+            retry_performed=retry_performed,
+            retry_count=retry_count,
+            retrieval_sufficient=retrieval_sufficient,
+            deterministic_answer_used=False,
+        )
+
+    def _generate_risk_answer(
+        self,
+        question: str,
+        risk_result: dict[str, Any],
+    ) -> str:
+        """
+        Generate a focused risk answer using only structured output
+        produced by RiskAnalysisTool.
+        """
+
+        system_prompt = self.prompt_builder.build_system_prompt(
+            "risk_analysis"
+        )
+
+        risk_context = risk_result.get(
+            "prompt_context",
+            "",
+        )
+
+        if not isinstance(risk_context, str):
+            risk_context = ""
+
+        user_prompt = (
+            "USER QUESTION\n\n"
+            f"{question}\n\n"
+            "VERIFIED RISK TOOL OUTPUT\n\n"
+            f"{risk_context}\n\n"
+            "FINAL RESPONSE RULES\n\n"
+            "- Answer only the risk question.\n"
+            "- Use only the verified risk evidence above.\n"
+            "- Group related risks under short headings.\n"
+            "- Do not discuss revenue, growth, products, strategy, "
+            "or unrelated company achievements.\n"
+            "- Do not direct the user to websites or external reports.\n"
+            "- Do not add generic closing statements.\n"
+            "- End immediately after the risk analysis."
+        )
+
+        try:
+            response = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    },
+                ],
+            )
+
+            return self._extract_llm_answer(
+                response
+            )
+
+        except Exception as error:
+            return (
+                "The risk evidence was extracted successfully, "
+                "but the final explanation could not be generated. "
+                f"Reason: {error}"
+            )
+
+    @staticmethod
+    def _build_response(
+        answer: str,
+        sources: list[dict],
+        calculation: dict[str, Any] | None,
+        comparison: dict[str, Any] | None,
+        risk_analysis: dict[str, Any] | None,
+        selected_tool: str,
+        execution_plan: list[str],
+        execution_result: dict[str, Any],
+        companies: list[str],
+        intent: str,
+        metric: str | None,
+        retrieval_plan: dict[str, Any],
+        retry_performed: bool,
+        retry_count: int,
+        retrieval_sufficient: bool,
+        deterministic_answer_used: bool,
+    ) -> dict[str, Any]:
+        """
+        Build one consistent agent response.
+        """
+
         return {
             "answer": answer,
             "sources": sources,
-            "detected_companies": resolved_companies,
-            "detected_intent": resolved_intent,
-            "detected_metric": detected_metric,
-            "plan": plan,
+            "calculation": calculation,
+            "comparison": comparison,
+            "risk_analysis": risk_analysis,
+            "selected_tool": selected_tool,
+            "execution_plan": execution_plan,
+            "executed_tools": execution_result.get(
+                "executed_tools",
+                [],
+            ),
+            "successful_tools": execution_result.get(
+                "successful_tools",
+                [],
+            ),
+            "failed_tools": execution_result.get(
+                "failed_tools",
+                [],
+            ),
+            "tool_outputs": execution_result.get(
+                "tool_outputs",
+                [],
+            ),
+            "tool_execution_success": execution_result.get(
+                "success",
+                False,
+            ),
+            "tool_execution_duration_ms": execution_result.get(
+                "duration_ms",
+                0.0,
+            ),
+            "detected_companies": companies,
+            "detected_intent": intent,
+            "detected_metric": metric,
+            "plan": retrieval_plan,
+            "retry_performed": retry_performed,
+            "retry_count": retry_count,
+            "retrieval_sufficient": retrieval_sufficient,
+            "deterministic_answer_used": deterministic_answer_used,
         }
+
+    @staticmethod
+    def _extract_calculation_result(
+        execution_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Extract the FinancialCalculatorTool result.
+        """
+
+        tool_outputs = execution_result.get(
+            "tool_outputs",
+            [],
+        )
+
+        for step in tool_outputs:
+            if step.get("tool") != "financial_calculator":
+                continue
+
+            output = step.get("output")
+
+            if not isinstance(output, dict):
+                continue
+
+            calculation = output.get(
+                "calculation"
+            )
+
+            if isinstance(calculation, dict):
+                return calculation
+
+        return None
+
+    @staticmethod
+    def _extract_comparison_result(
+        execution_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Extract the CompanyComparisonTool result.
+        """
+
+        tool_outputs = execution_result.get(
+            "tool_outputs",
+            [],
+        )
+
+        for step in tool_outputs:
+            if step.get("tool") != "company_comparison":
+                continue
+
+            output = step.get("output")
+
+            if isinstance(output, dict):
+                return output
+
+        return None
+
+    @staticmethod
+    def _extract_risk_result(
+        execution_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Extract the RiskAnalysisTool result.
+        """
+
+        tool_outputs = execution_result.get(
+            "tool_outputs",
+            [],
+        )
+
+        for step in tool_outputs:
+            if step.get("tool") != "risk_analysis":
+                continue
+
+            output = step.get("output")
+
+            if isinstance(output, dict):
+                return output
+
+        return None
+
+    @staticmethod
+    def _add_agent_diagnostics(
+        user_prompt: str,
+        selected_tool: str,
+        execution_plan: list[str],
+        detected_metric: str | None,
+    ) -> str:
+        """
+        Add routing and planning information to the prompt.
+        """
+
+        metric_text = (
+            detected_metric
+            if detected_metric
+            else "No financial metric detected"
+        )
+
+        plan_text = (
+            ", ".join(execution_plan)
+            if execution_plan
+            else "No tools planned"
+        )
+
+        return (
+            "AGENT ROUTING INFORMATION\n"
+            f"Primary selected tool: {selected_tool}\n"
+            f"Execution plan: {plan_text}\n"
+            f"Detected financial metric: {metric_text}\n\n"
+            f"{user_prompt}"
+        )
+
+    @staticmethod
+    def _add_multi_tool_context(
+        user_prompt: str,
+        execution_result: dict[str, Any],
+    ) -> str:
+        """
+        Add verified tool results to the LLM prompt.
+        """
+
+        prompt_context = execution_result.get(
+            "prompt_context"
+        )
+
+        if (
+            not isinstance(prompt_context, str)
+            or not prompt_context.strip()
+        ):
+            return user_prompt
+
+        return (
+            "VERIFIED MULTI-TOOL OUTPUT\n"
+            "Successful deterministic results are authoritative. "
+            "Do not recalculate, replace, or contradict verified "
+            "results.\n\n"
+            f"{prompt_context.strip()}\n\n"
+            "USER REQUEST AND REPORT CONTEXT\n"
+            f"{user_prompt}"
+        )
 
     def _resolve_companies(
         self,
         newly_detected_companies: list[str],
     ) -> list[str]:
         """
-        Use companies from the current question when available.
+        Use companies detected in the current question.
 
-        If the user does not mention a company, reuse the companies
-        from the previous conversation turn.
+        If none are detected, reuse companies stored in memory.
         """
 
         if newly_detected_companies:
             return newly_detected_companies
 
-        return self.memory.get_last_companies()
+        remembered_companies = (
+            self.memory.get_last_companies()
+        )
+
+        return remembered_companies or []
 
     def _resolve_intent(
         self,
         newly_detected_intent: str,
     ) -> str:
         """
-        Reuse the previous intent when the current question is vague.
-
-        Example:
-        Previous: "What risks did Apple disclose?"
-        Current: "What about Microsoft?"
-
-        Current detected intent:
-        general_question
-
-        Resolved intent:
-        risk_analysis
+        Reuse the previous intent for vague follow-up questions.
         """
 
-        previous_intent = self.memory.get_last_intent()
+        previous_intent = (
+            self.memory.get_last_intent()
+        )
 
         if (
             newly_detected_intent == "general_question"
@@ -213,65 +697,67 @@ class FinancialAgent:
 
         return newly_detected_intent
 
-    def _retrieve_context(
+    def _add_conversation_context(
+        self,
+        user_prompt: str,
+    ) -> str:
+        """
+        Add the previous question for conversational continuity.
+        """
+
+        previous_question = (
+            self.memory.get_last_question()
+        )
+
+        if not previous_question:
+            return user_prompt
+
+        return (
+            "PREVIOUS USER QUESTION\n"
+            f"{previous_question}\n\n"
+            "CURRENT REQUEST\n"
+            f"{user_prompt}"
+        )
+
+    def _update_memory(
         self,
         question: str,
         companies: list[str],
-        top_k: int,
-    ) -> list[dict]:
+        intent: str,
+    ) -> None:
         """
-        Retrieve relevant chunks based on the query plan.
-
-        For one company:
-        - Retrieve top_k chunks from that company's report.
-
-        For multiple companies:
-        - Retrieve top_k chunks separately for each company.
-
-        When no company is available:
-        - Search across the entire vector database.
+        Store the latest conversation state.
         """
 
-        if not companies:
-            return self.retrieval_service.retrieve(
-                query=question,
-                top_k=top_k,
-            )
-
-        retrieved_chunks = []
-
-        for company in companies:
-            company_chunks = (
-                self.retrieval_service.retrieve(
-                    query=question,
-                    top_k=top_k,
-                    company=company,
-                )
-            )
-
-            retrieved_chunks.extend(
-                company_chunks
-            )
-
-        return retrieved_chunks
+        self.memory.update(
+            question=question,
+            companies=companies,
+            intent=intent,
+        )
 
     @staticmethod
     def _build_context(
         retrieved_chunks: list[dict],
     ) -> str:
         """
-        Convert retrieved chunks into structured context
-        for the language model.
+        Convert retrieved chunks into structured report context.
         """
 
-        context_sections = []
+        context_sections: list[str] = []
 
         for index, chunk in enumerate(
             retrieved_chunks,
             start=1,
         ):
-            metadata = chunk["metadata"]
-            content = chunk["content"]
+            metadata = chunk.get(
+                "metadata",
+                {},
+            )
+
+            content = chunk.get(
+                "content",
+                "",
+            )
 
             company = metadata.get(
                 "company",
@@ -298,28 +784,33 @@ class FinancialAgent:
                 "Unknown source",
             )
 
-            page_number = metadata.get(
+            stored_page = metadata.get(
                 "page",
                 "Unknown page",
             )
 
-            if isinstance(page_number, int):
-                page_number += 1
+            display_page = stored_page
+
+            if isinstance(stored_page, int):
+                display_page = stored_page + 1
+
+            distance = chunk.get(
+                "distance",
+                "Unknown distance",
+            )
 
             context_sections.append(
-                f"""
-Context {index}
-
-Company: {company}
-Ticker: {ticker}
-Fiscal year: {fiscal_year}
-Document type: {document_type}
-File: {source_file}
-Page: {page_number}
-
-Content:
-{content}
-""".strip()
+                (
+                    f"Context {index}\n"
+                    f"Company: {company}\n"
+                    f"Ticker: {ticker}\n"
+                    f"Fiscal year: {fiscal_year}\n"
+                    f"Document type: {document_type}\n"
+                    f"Source file: {source_file}\n"
+                    f"Page: {display_page}\n"
+                    f"Retrieval distance: {distance}\n\n"
+                    f"Content:\n{content}"
+                )
             )
 
         return "\n\n".join(
@@ -331,15 +822,17 @@ Content:
         retrieved_chunks: list[dict],
     ) -> list[dict]:
         """
-        Extract unique source references directly from
-        ChromaDB metadata.
+        Extract unique verified source references.
         """
 
-        sources = []
-        seen_sources = set()
+        sources: list[dict] = []
+        seen_sources: set[tuple] = set()
 
         for chunk in retrieved_chunks:
-            metadata = chunk["metadata"]
+            metadata = chunk.get(
+                "metadata",
+                {},
+            )
 
             company = metadata.get(
                 "company",
@@ -366,13 +859,15 @@ Content:
                 "Unknown document type",
             )
 
-            page_number = metadata.get(
+            stored_page = metadata.get(
                 "page",
                 "Unknown page",
             )
 
-            if isinstance(page_number, int):
-                page_number += 1
+            display_page = stored_page
+
+            if isinstance(stored_page, int):
+                display_page = stored_page + 1
 
             source_key = (
                 company,
@@ -380,7 +875,7 @@ Content:
                 source_file,
                 fiscal_year,
                 document_type,
-                page_number,
+                display_page,
             )
 
             if source_key in seen_sources:
@@ -393,7 +888,7 @@ Content:
                     "source_file": source_file,
                     "fiscal_year": fiscal_year,
                     "document_type": document_type,
-                    "page": page_number,
+                    "page": display_page,
                 }
             )
 
@@ -403,9 +898,77 @@ Content:
 
         return sources
 
+    @staticmethod
+    def _extract_llm_answer(
+        response: Any,
+    ) -> str:
+        """
+        Safely extract text from an Ollama response.
+        """
+
+        try:
+            if isinstance(response, dict):
+                message = response.get(
+                    "message",
+                    {},
+                )
+
+                answer = message.get(
+                    "content"
+                )
+
+            else:
+                answer = response.message.content
+
+        except (
+            AttributeError,
+            KeyError,
+            TypeError,
+        ):
+            return (
+                "The language model returned an unexpected response."
+            )
+
+        if not isinstance(answer, str):
+            return (
+                "The language model returned an invalid answer."
+            )
+
+        return answer.strip()
+
+    @staticmethod
+    def _empty_question_response() -> dict[str, Any]:
+        """
+        Return a consistent response for an empty question.
+        """
+
+        return {
+            "answer": "Please enter a financial question.",
+            "sources": [],
+            "calculation": None,
+            "comparison": None,
+            "risk_analysis": None,
+            "selected_tool": "document_retrieval",
+            "execution_plan": [],
+            "executed_tools": [],
+            "successful_tools": [],
+            "failed_tools": [],
+            "tool_outputs": [],
+            "tool_execution_success": False,
+            "tool_execution_duration_ms": 0.0,
+            "detected_companies": [],
+            "detected_intent": "general_question",
+            "detected_metric": None,
+            "plan": {},
+            "retry_performed": False,
+            "retry_count": 0,
+            "retrieval_sufficient": False,
+            "deterministic_answer_used": False,
+        }
+
     def clear_memory(self) -> None:
         """
-        Clear the current conversation memory.
+        Clear the current in-memory conversation state.
         """
 
         self.memory.clear()
@@ -415,8 +978,9 @@ if __name__ == "__main__":
     financial_agent = FinancialAgent()
 
     test_questions = [
+        "Calculate Apple's revenue growth.",
         "Compare Apple and Microsoft revenue.",
-        "Which company appears stronger?",
+        "What risks did Microsoft disclose?",
     ]
 
     for test_question in test_questions:
@@ -425,10 +989,7 @@ if __name__ == "__main__":
         )
 
         print("\n" + "=" * 80)
-
-        print(
-            f"Question:\n{test_question}"
-        )
+        print(f"Question:\n{test_question}")
 
         print(
             "\nDetected companies:\n"
@@ -446,19 +1007,70 @@ if __name__ == "__main__":
         )
 
         print(
-            "\nExecution plan:\n"
-            f"{result['plan']}"
+            "\nPrimary selected tool:\n"
+            f"{result['selected_tool']}"
         )
 
         print(
-            f"\nAnswer:\n{result['answer']}"
+            "\nDeterministic answer used:\n"
+            f"{result['deterministic_answer_used']}"
+        )
+
+        print("\nExecution plan:")
+
+        for step_number, tool_name in enumerate(
+            result.get(
+                "execution_plan",
+                [],
+            ),
+            start=1,
+        ):
+            print(
+                f"{step_number}. {tool_name}"
+            )
+
+        print("\nExecuted tools:")
+        print(
+            result.get(
+                "executed_tools",
+                [],
+            )
+        )
+
+        print("\nSuccessful tools:")
+        print(
+            result.get(
+                "successful_tools",
+                [],
+            )
+        )
+
+        print("\nFailed tools:")
+        print(
+            result.get(
+                "failed_tools",
+                [],
+            )
+        )
+
+        print(
+            "\nRisk analysis result:\n"
+            f"{result.get('risk_analysis')}"
+        )
+
+        print(
+            f"\nAnswer:\n"
+            f"{result['answer']}"
         )
 
         print("\nSources:")
 
-        for source in result["sources"]:
+        for source in result.get(
+            "sources",
+            [],
+        ):
             print(
-            f"- {source['company']} | "
-            f"{source['source_file']} | "
-            f"Page {source['page']}"
-    )
+                f"- {source.get('company')} | "
+                f"{source.get('source_file')} | "
+                f"Page {source.get('page')}"
+            )

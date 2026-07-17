@@ -46,7 +46,7 @@ class QueryExecutor:
         results: list[dict],
     ) -> list[dict]:
         """
-        Remove repeated chunks using source file, page, and content.
+        Remove duplicate chunks using source file, page, and content.
         """
 
         unique_results = []
@@ -77,7 +77,8 @@ class QueryExecutor:
         """
         Sort results from most relevant to least relevant.
 
-        In ChromaDB, a smaller distance usually means a closer match.
+        Smaller ChromaDB distance values generally indicate
+        stronger semantic similarity.
         """
 
         return sorted(
