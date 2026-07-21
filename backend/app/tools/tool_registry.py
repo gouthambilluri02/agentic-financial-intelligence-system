@@ -1,10 +1,17 @@
+from __future__ import annotations
+
 from backend.app.tools.base_tool import BaseTool
-from backend.app.tools.risk_analysis_tool import RiskAnalysisTool
+from backend.app.tools.calculated_comparison_tool import (
+    CalculatedComparisonTool,
+)
 from backend.app.tools.company_comparison_tool import (
     CompanyComparisonTool,
 )
 from backend.app.tools.financial_calculator_tool import (
     FinancialCalculatorTool,
+)
+from backend.app.tools.risk_analysis_tool import (
+    RiskAnalysisTool,
 )
 
 
@@ -22,6 +29,10 @@ class ToolRegistry:
 
         self.register_tool(
             CompanyComparisonTool()
+        )
+
+        self.register_tool(
+            CalculatedComparisonTool()
         )
 
         self.register_tool(
@@ -121,9 +132,12 @@ class ToolRegistry:
         Check whether a tool is registered.
         """
 
-        return self.get_tool(
-            tool_name
-        ) is not None
+        return (
+            self.get_tool(
+                tool_name
+            )
+            is not None
+        )
 
     def list_tool_names(
         self,
@@ -154,19 +168,27 @@ class ToolRegistry:
 if __name__ == "__main__":
     registry = ToolRegistry()
 
-    print("Registered tool names:")
+    print(
+        "Registered tool names:"
+    )
+
     print(
         registry.list_tool_names()
     )
 
-    print("\nRegistered tool metadata:")
+    print(
+        "\nRegistered tool metadata:"
+    )
 
     for tool_metadata in registry.list_tools():
-        print(tool_metadata)
+        print(
+            tool_metadata
+        )
 
     print(
         "\nFinancial calculator available:"
     )
+
     print(
         registry.has_tool(
             "financial_calculator"
@@ -176,6 +198,7 @@ if __name__ == "__main__":
     print(
         "\nCompany comparison available:"
     )
+
     print(
         registry.has_tool(
             "company_comparison"
@@ -183,8 +206,19 @@ if __name__ == "__main__":
     )
 
     print(
+        "\nCalculated comparison available:"
+    )
+
+    print(
+        registry.has_tool(
+            "calculated_comparison"
+        )
+    )
+
+    print(
         "\nRisk analysis available:"
     )
+
     print(
         registry.has_tool(
             "risk_analysis"

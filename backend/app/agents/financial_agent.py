@@ -233,6 +233,18 @@ class FinancialAgent:
             )
         )
 
+        calculated_comparison_result = (
+            self._extract_calculated_comparison_result(
+                execution_result
+            )
+        )
+
+        calculated_comparison_reasoning = (
+            self._extract_calculated_comparison_reasoning(
+                calculated_comparison_result
+            )
+        )
+
         risk_result = (
             self._extract_risk_result(
                 execution_result
@@ -263,6 +275,7 @@ class FinancialAgent:
                 retrieved_chunks=retrieved_chunks,
                 calculation=calculation_result,
                 comparison=comparison_result,
+                calculated_comparison=calculated_comparison_result,
                 risk_analysis=risk_result,
                 selected_tool=selected_tool,
                 execution_plan=execution_plan,
@@ -283,6 +296,7 @@ class FinancialAgent:
                 selected_tool=selected_tool,
                 calculation=calculation_result,
                 comparison=comparison_result,
+                reasoning=calculated_comparison_reasoning,
             )
         )
 
@@ -299,6 +313,7 @@ class FinancialAgent:
                 retrieved_chunks=retrieved_chunks,
                 calculation=calculation_result,
                 comparison=comparison_result,
+                calculated_comparison=calculated_comparison_result,
                 risk_analysis=risk_result,
                 selected_tool=selected_tool,
                 execution_plan=execution_plan,
@@ -353,6 +368,7 @@ class FinancialAgent:
                 retrieved_chunks=retrieved_chunks,
                 calculation=calculation_result,
                 comparison=comparison_result,
+                calculated_comparison=calculated_comparison_result,
                 risk_analysis=risk_result,
                 selected_tool=selected_tool,
                 execution_plan=execution_plan,
@@ -562,6 +578,7 @@ class FinancialAgent:
         retrieved_chunks: list[dict[str, Any]],
         calculation: dict[str, Any] | None,
         comparison: dict[str, Any] | None,
+        calculated_comparison: dict[str, Any] | None,
         risk_analysis: dict[str, Any] | None,
         selected_tool: str,
         execution_plan: list[str],
@@ -626,6 +643,7 @@ class FinancialAgent:
             "execution_trace": execution_trace,
             "calculation": calculation,
             "comparison": comparison,
+            "calculated_comparison": calculated_comparison,
             "risk_analysis": risk_analysis,
             "selected_tool": selected_tool,
             "execution_plan": execution_plan,
@@ -913,6 +931,64 @@ class FinancialAgent:
 
             if isinstance(output, dict):
                 return output
+
+        return None
+
+    @staticmethod
+    def _extract_calculated_comparison_result(
+        execution_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """
+        Extract the complete CalculatedComparisonTool result.
+
+        ToolExecutor stores every registered tool's dictionary
+        response under the step output field.
+        """
+
+        tool_outputs = execution_result.get(
+            "tool_outputs",
+            [],
+        )
+
+        if not isinstance(tool_outputs, list):
+            return None
+
+        for step in tool_outputs:
+            if not isinstance(step, dict):
+                continue
+
+            if step.get("tool") != "calculated_comparison":
+                continue
+
+            output = step.get(
+                "output"
+            )
+
+            if isinstance(output, dict):
+                return output
+
+        return None
+
+    @staticmethod
+    def _extract_calculated_comparison_reasoning(
+        calculated_comparison: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """
+        Extract deterministic reasoning from a calculated comparison.
+        """
+
+        if not isinstance(
+            calculated_comparison,
+            dict,
+        ):
+            return None
+
+        reasoning = calculated_comparison.get(
+            "reasoning"
+        )
+
+        if isinstance(reasoning, dict):
+            return reasoning
 
         return None
 
@@ -1253,6 +1329,7 @@ class FinancialAgent:
             "execution_trace": [],
             "calculation": None,
             "comparison": None,
+            "calculated_comparison": None,
             "risk_analysis": None,
             "selected_tool": "document_retrieval",
             "execution_plan": [],
@@ -1286,6 +1363,10 @@ if __name__ == "__main__":
     test_questions = [
         "Calculate Apple's revenue growth.",
         "Compare Apple and Microsoft revenue.",
+        (
+            "Compare Apple and Microsoft revenue growth "
+            "and identify the stronger performer."
+        ),
         "What risks did Microsoft disclose?",
     ]
 
@@ -1375,6 +1456,11 @@ if __name__ == "__main__":
                 "failed_tools",
                 [],
             )
+        )
+
+        print(
+            "\nCalculated comparison result:\n"
+            f"{result.get('calculated_comparison')}"
         )
 
         print(

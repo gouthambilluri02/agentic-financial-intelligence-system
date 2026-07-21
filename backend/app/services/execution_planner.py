@@ -1,9 +1,15 @@
+from __future__ import annotations
+
+
 class ExecutionPlanner:
     """
     Create an ordered multi-tool execution plan.
 
     The planner decides which tools should run based on the
     primary tool selected by ToolRouter.
+
+    The order is important because downstream components
+    consume tool outputs in the same order.
     """
 
     def create_plan(
@@ -23,14 +29,28 @@ class ExecutionPlanner:
         )
 
         normalized_intent = (
-            intent.strip()
+            intent.strip().lower()
             if isinstance(intent, str)
             else "general_question"
         )
 
+        normalized_companies = (
+            companies
+            if isinstance(companies, list)
+            else []
+        )
+
         plan: list[str] = []
 
-        if normalized_tool == "financial_calculator":
+        if normalized_tool == "calculated_comparison":
+            plan.extend(
+                [
+                    "calculated_comparison",
+                    "document_retrieval",
+                ]
+            )
+
+        elif normalized_tool == "financial_calculator":
             plan.extend(
                 [
                     "financial_calculator",
@@ -55,8 +75,21 @@ class ExecutionPlanner:
             )
 
         elif normalized_tool == "report_summary":
-            plan.append(
-                "document_retrieval"
+            plan.extend(
+                [
+                    "document_retrieval",
+                ]
+            )
+
+        elif (
+            normalized_intent == "comparison"
+            and len(normalized_companies) > 1
+        ):
+            plan.extend(
+                [
+                    "company_comparison",
+                    "document_retrieval",
+                ]
             )
 
         elif normalized_intent == "risk_analysis":
@@ -107,6 +140,14 @@ if __name__ == "__main__":
 
     tests = [
         (
+            "calculated_comparison",
+            "comparison",
+            [
+                "Apple",
+                "Microsoft",
+            ],
+        ),
+        (
             "financial_calculator",
             "financial_metric",
             ["Apple"],
@@ -136,7 +177,11 @@ if __name__ == "__main__":
         ),
     ]
 
-    for selected_tool, intent, companies in tests:
+    for (
+        selected_tool,
+        intent,
+        companies,
+    ) in tests:
         print("=" * 70)
 
         result = planner.create_plan(
