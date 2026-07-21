@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.app.services.financial_response_formatter import (
+    FinancialResponseFormatter,
+)
+
 
 class DeterministicResponseBuilder:
     """
@@ -17,6 +21,20 @@ class DeterministicResponseBuilder:
     - recalculating results
     - introducing unsupported information
     """
+
+    def __init__(
+        self,
+        formatter: FinancialResponseFormatter | None = None,
+    ) -> None:
+        """
+        Initialize the builder with a reusable response formatter.
+        """
+
+        self.formatter = (
+            formatter
+            if formatter is not None
+            else FinancialResponseFormatter()
+        )
 
     def build_answer(
         self,
@@ -47,13 +65,15 @@ class DeterministicResponseBuilder:
         calculation: dict[str, Any] | None,
     ) -> str:
         """
-        Build a clean answer from a verified financial calculation.
+        Build a formatted answer from a verified financial calculation.
         """
 
         if not calculation:
-            return (
-                "The financial calculation could not be completed "
-                "because no verified calculation result was available."
+            return self.formatter.format_error(
+                title="Financial Calculation",
+                reason=(
+                    "No verified calculation result was available."
+                ),
             )
 
         if not calculation.get("success"):
@@ -62,9 +82,9 @@ class DeterministicResponseBuilder:
                 "The required financial values were unavailable.",
             )
 
-            return (
-                "The financial calculation could not be completed.\n\n"
-                f"Reason: {error}"
+            return self.formatter.format_error(
+                title="Financial Calculation",
+                reason=str(error),
             )
 
         results = calculation.get(
@@ -73,9 +93,12 @@ class DeterministicResponseBuilder:
         )
 
         if not results:
-            return (
-                "The financial calculation completed without a usable "
-                "verified result."
+            return self.formatter.format_error(
+                title="Financial Calculation",
+                reason=(
+                    "The calculation completed without a usable "
+                    "verified result."
+                ),
             )
 
         answer_sections: list[str] = []
@@ -87,14 +110,14 @@ class DeterministicResponseBuilder:
                 )
             )
 
-        return "\n\n".join(answer_sections)
+        return "\n\n---\n\n".join(answer_sections)
 
     def _format_calculation_result(
         self,
         result: dict[str, Any],
     ) -> str:
         """
-        Format one company's verified calculation.
+        Prepare one company's verified calculation for formatting.
         """
 
         company = result.get(
@@ -109,12 +132,12 @@ class DeterministicResponseBuilder:
 
         current_year = result.get(
             "current_year",
-            "current period",
+            "Current period",
         )
 
         previous_year = result.get(
             "previous_year",
-            "previous period",
+            "Previous period",
         )
 
         current_value = result.get(
@@ -146,25 +169,11 @@ class DeterministicResponseBuilder:
             metric
         )
 
-        current_display = self._format_number(
-            current_value
-        )
-
-        previous_display = self._format_number(
-            previous_value
-        )
-
-        result_display = self._format_number(
-            verified_result
-        )
-
-        interpretation = (
-            self._build_growth_interpretation(
-                company=company,
-                metric_title=metric_title,
-                result=verified_result,
-                current_year=current_year,
-            )
+        interpretation = self._build_growth_interpretation(
+            company=company,
+            metric_title=metric_title,
+            result=verified_result,
+            current_year=current_year,
         )
 
         result_suffix = (
@@ -173,17 +182,17 @@ class DeterministicResponseBuilder:
             else f" {unit}"
         )
 
-        return (
-            f"## {metric_title} Growth\n\n"
-            f"{company}'s {metric_title.lower()} changed from "
-            f"**{previous_display} in {previous_year}** to "
-            f"**{current_display} in {current_year}**.\n\n"
-            f"**Formula**\n\n"
-            f"{formula}\n\n"
-            f"**Verified result: "
-            f"{result_display}{result_suffix}**\n\n"
-            f"**Interpretation**\n\n"
-            f"{interpretation}"
+        return self.formatter.format_calculation_result(
+            company=company,
+            metric_title=metric_title,
+            previous_year=previous_year,
+            previous_value=previous_value,
+            current_year=current_year,
+            current_value=current_value,
+            formula=formula,
+            result_value=verified_result,
+            result_suffix=result_suffix,
+            interpretation=interpretation,
         )
 
     def build_comparison_answer(
@@ -191,13 +200,15 @@ class DeterministicResponseBuilder:
         comparison: dict[str, Any] | None,
     ) -> str:
         """
-        Build a clean answer from a verified company comparison.
+        Build a formatted answer from a verified company comparison.
         """
 
         if not comparison:
-            return (
-                "The company comparison could not be completed "
-                "because no verified comparison result was available."
+            return self.formatter.format_error(
+                title="Company Comparison",
+                reason=(
+                    "No verified comparison result was available."
+                ),
             )
 
         if not comparison.get("success"):
@@ -206,9 +217,9 @@ class DeterministicResponseBuilder:
                 "The required company values were unavailable.",
             )
 
-            return (
-                "The company comparison could not be completed.\n\n"
-                f"Reason: {error}"
+            return self.formatter.format_error(
+                title="Company Comparison",
+                reason=str(error),
             )
 
         results = comparison.get(
@@ -217,9 +228,12 @@ class DeterministicResponseBuilder:
         )
 
         if len(results) < 2:
-            return (
-                "The comparison requires verified values for at least "
-                "two companies."
+            return self.formatter.format_error(
+                title="Company Comparison",
+                reason=(
+                    "Verified values for at least two companies "
+                    "are required."
+                ),
             )
 
         metric = comparison.get(
@@ -231,43 +245,23 @@ class DeterministicResponseBuilder:
             metric
         )
 
-        value_lines: list[str] = []
-
-        years = set()
-
-        for result in results:
-            company = result.get(
-                "company",
-                "Unknown company",
+        years = {
+            str(
+                result.get(
+                    "year",
+                    "Unknown year",
+                )
             )
-
-            year = result.get(
-                "year",
-                "Unknown year",
-            )
-
-            value = self._format_number(
-                result.get("value")
-            )
-
-            years.add(
-                str(year)
-            )
-
-            value_lines.append(
-                f"- **{company}:** {value} "
-                f"(fiscal year {year})"
-            )
+            for result in results
+        }
 
         highest_company = comparison.get(
             "highest_company",
             "Unknown company",
         )
 
-        highest_value = self._format_number(
-            comparison.get(
-                "highest_value"
-            )
+        highest_value = comparison.get(
+            "highest_value",
         )
 
         lowest_company = comparison.get(
@@ -275,72 +269,29 @@ class DeterministicResponseBuilder:
             "Unknown company",
         )
 
-        lowest_value = self._format_number(
-            comparison.get(
-                "lowest_value"
-            )
+        lowest_value = comparison.get(
+            "lowest_value",
         )
 
-        absolute_difference = self._format_number(
-            comparison.get(
-                "absolute_difference"
-            )
+        absolute_difference = comparison.get(
+            "absolute_difference",
         )
 
         percentage_difference = comparison.get(
-            "percentage_difference"
+            "percentage_difference",
         )
 
-        answer_parts = [
-            f"## {metric_title} Comparison",
-            "",
-            *value_lines,
-            "",
-            f"**Higher value:** {highest_company} "
-            f"with {highest_value}",
-            "",
-            f"**Lower value:** {lowest_company} "
-            f"with {lowest_value}",
-            "",
-            f"**Absolute difference:** {absolute_difference}",
-        ]
-
-        if percentage_difference is not None:
-            answer_parts.extend(
-                [
-                    "",
-                    (
-                        "**Percentage difference:** "
-                        f"{self._format_number(percentage_difference)}%"
-                    ),
-                ]
-            )
-
-        answer_parts.extend(
-            [
-                "",
-                "**Conclusion**",
-                "",
-                (
-                    f"{highest_company} reported the higher "
-                    f"{metric_title.lower()} value."
-                ),
-            ]
+        return self.formatter.format_comparison_result(
+            metric_title=metric_title,
+            results=results,
+            highest_company=highest_company,
+            highest_value=highest_value,
+            lowest_company=lowest_company,
+            lowest_value=lowest_value,
+            absolute_difference=absolute_difference,
+            percentage_difference=percentage_difference,
+            reporting_period_warning=len(years) > 1,
         )
-
-        if len(years) > 1:
-            answer_parts.extend(
-                [
-                    "",
-                    (
-                        "The companies use different reporting periods, "
-                        "so the comparison should be interpreted with "
-                        "that limitation."
-                    ),
-                ]
-            )
-
-        return "\n".join(answer_parts)
 
     @staticmethod
     def _build_growth_interpretation(
@@ -359,7 +310,8 @@ class DeterministicResponseBuilder:
         ):
             return (
                 f"The verified result describes the change in "
-                f"{company}'s {metric_title.lower()} for {current_year}."
+                f"{company}'s {metric_title.lower()} for "
+                f"{current_year}."
             )
 
         if result > 0:
@@ -371,8 +323,9 @@ class DeterministicResponseBuilder:
 
         if result == 0:
             return (
-                f"{company}'s {metric_title.lower()} remained unchanged "
-                f"in {current_year} compared with the previous period."
+                f"{company}'s {metric_title.lower()} remained "
+                f"unchanged in {current_year} compared with the "
+                "previous period."
             )
 
         magnitude = abs(
@@ -400,7 +353,10 @@ class DeterministicResponseBuilder:
         Convert internal metric names into readable labels.
         """
 
-        if not isinstance(metric, str):
+        if not isinstance(
+            metric,
+            str,
+        ):
             return "Financial Metric"
 
         metric_names = {
@@ -423,40 +379,6 @@ class DeterministicResponseBuilder:
                 " ",
             ).title(),
         )
-
-    @staticmethod
-    def _format_number(
-        value: Any,
-    ) -> str:
-        """
-        Format numeric values without changing their meaning.
-        """
-
-        if value is None:
-            return "Unavailable"
-
-        if isinstance(
-            value,
-            bool,
-        ):
-            return str(value)
-
-        if isinstance(
-            value,
-            int,
-        ):
-            return f"{value:,}"
-
-        if isinstance(
-            value,
-            float,
-        ):
-            if value.is_integer():
-                return f"{int(value):,}"
-
-            return f"{value:,.2f}"
-
-        return str(value)
 
 
 if __name__ == "__main__":
