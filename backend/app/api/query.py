@@ -38,8 +38,16 @@ def ask_financial_question(
                 "answer",
                 "No answer was generated.",
             ),
+            confidence=result.get(
+                "confidence",
+                {},
+            ),
             sources=result.get(
                 "sources",
+                [],
+            ),
+            execution_trace=result.get(
+                "execution_trace",
                 [],
             ),
             calculation=result.get(
@@ -47,6 +55,9 @@ def ask_financial_question(
             ),
             comparison=result.get(
                 "comparison",
+            ),
+            risk_analysis=result.get(
+                "risk_analysis",
             ),
             detected_companies=result.get(
                 "detected_companies",

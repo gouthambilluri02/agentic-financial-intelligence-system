@@ -1,18 +1,29 @@
+from __future__ import annotations
+
 from typing import Any
 
 import ollama
 
 from backend.app.services.company_detector import CompanyDetector
+from backend.app.services.confidence_scoring_service import (
+    ConfidenceScoringService,
+)
 from backend.app.services.conversation_memory import ConversationMemory
 from backend.app.services.deterministic_response_builder import (
     DeterministicResponseBuilder,
 )
 from backend.app.services.execution_planner import ExecutionPlanner
+from backend.app.services.execution_trace_service import (
+    ExecutionTraceService,
+)
 from backend.app.services.financial_metrics import FinancialMetricDetector
 from backend.app.services.intent_detector import IntentDetector
 from backend.app.services.prompt_builder import PromptBuilder
 from backend.app.services.retrieval_orchestrator import (
     RetrievalOrchestrator,
+)
+from backend.app.services.source_ranking_service import (
+    SourceRankingService,
 )
 from backend.app.services.tool_executor import ToolExecutor
 from backend.app.services.tool_router import ToolRouter
@@ -27,16 +38,18 @@ class FinancialAgent:
     Main orchestrator for the Agentic Financial Intelligence System.
 
     Workflow:
-    1. Detect companies, intent, and financial metric.
-    2. Resolve conversation memory.
-    3. Select the primary tool.
-    4. Retrieve relevant financial-report evidence.
-    5. Create a multi-tool execution plan.
-    6. Execute every planned tool.
-    7. Extract deterministic tool results.
-    8. Return deterministic calculation and comparison answers.
-    9. Use structured risk-tool evidence for risk questions.
-    10. Use Ollama for narrative report questions.
+    1. Validate and clean the user question.
+    2. Detect companies, intent, and financial metric.
+    3. Resolve conversational context using memory.
+    4. Select the primary analysis tool.
+    5. Retrieve relevant financial-report evidence.
+    6. Build and execute the multi-tool plan.
+    7. Extract structured tool outputs.
+    8. Rank verified report sources.
+    9. Generate a deterministic or language-model answer.
+    10. Calculate evidence-based confidence.
+    11. Build a safe execution trace.
+    12. Return one consistent structured response.
     """
 
     def __init__(self) -> None:
@@ -60,6 +73,18 @@ class FinancialAgent:
 
         self.deterministic_response_builder = (
             DeterministicResponseBuilder()
+        )
+
+        self.source_ranking_service = (
+            SourceRankingService()
+        )
+
+        self.confidence_scoring_service = (
+            ConfidenceScoringService()
+        )
+
+        self.execution_trace_service = (
+            ExecutionTraceService()
         )
 
         self.memory = ConversationMemory()
@@ -128,14 +153,22 @@ class FinancialAgent:
             [],
         )
 
+        if not isinstance(retrieved_chunks, list):
+            retrieved_chunks = []
+
         retrieval_plan = retrieval_result.get(
             "plan",
             {},
         )
 
-        retry_performed = retrieval_result.get(
-            "retry_performed",
-            False,
+        if not isinstance(retrieval_plan, dict):
+            retrieval_plan = {}
+
+        retry_performed = bool(
+            retrieval_result.get(
+                "retry_performed",
+                False,
+            )
         )
 
         retry_count = retrieval_result.get(
@@ -143,9 +176,14 @@ class FinancialAgent:
             0,
         )
 
-        retrieval_sufficient = retrieval_result.get(
-            "retrieval_sufficient",
-            False,
+        if not isinstance(retry_count, int):
+            retry_count = 0
+
+        retrieval_sufficient = bool(
+            retrieval_result.get(
+                "retrieval_sufficient",
+                False,
+            )
         )
 
         execution_plan = (
@@ -166,6 +204,23 @@ class FinancialAgent:
             )
         )
 
+        if not isinstance(execution_result, dict):
+            execution_result = {
+                "success": False,
+                "execution_plan": execution_plan,
+                "executed_tools": [],
+                "successful_tools": [],
+                "failed_tools": execution_plan,
+                "tool_outputs": [],
+                "prompt_context": (
+                    "Tool execution returned an invalid result."
+                ),
+                "duration_ms": 0.0,
+                "error": (
+                    "ToolExecutor must return a dictionary."
+                ),
+            }
+
         calculation_result = (
             self._extract_calculation_result(
                 execution_result
@@ -184,11 +239,18 @@ class FinancialAgent:
             )
         )
 
-        sources = self._extract_sources(
-            retrieved_chunks
+        ranked_sources = (
+            self.source_ranking_service.rank_sources(
+                retrieved_chunks
+            )
         )
 
         if not retrieved_chunks:
+            answer = (
+                "I could not find relevant information in "
+                "the available financial reports."
+            )
+
             self._update_memory(
                 question=cleaned_question,
                 companies=resolved_companies,
@@ -196,11 +258,9 @@ class FinancialAgent:
             )
 
             return self._build_response(
-                answer=(
-                    "I could not find relevant information in "
-                    "the available financial reports."
-                ),
+                answer=answer,
                 sources=[],
+                retrieved_chunks=retrieved_chunks,
                 calculation=calculation_result,
                 comparison=comparison_result,
                 risk_analysis=risk_result,
@@ -215,6 +275,7 @@ class FinancialAgent:
                 retry_count=retry_count,
                 retrieval_sufficient=False,
                 deterministic_answer_used=False,
+                response_generation_status="limited",
             )
 
         deterministic_answer = (
@@ -234,7 +295,8 @@ class FinancialAgent:
 
             return self._build_response(
                 answer=deterministic_answer,
-                sources=sources,
+                sources=ranked_sources,
+                retrieved_chunks=retrieved_chunks,
                 calculation=calculation_result,
                 comparison=comparison_result,
                 risk_analysis=risk_result,
@@ -249,6 +311,7 @@ class FinancialAgent:
                 retry_count=retry_count,
                 retrieval_sufficient=retrieval_sufficient,
                 deterministic_answer_used=True,
+                response_generation_status="success",
             )
 
         if (
@@ -256,9 +319,11 @@ class FinancialAgent:
             and isinstance(risk_result, dict)
             and risk_result.get("success")
         ):
-            risk_answer = self._generate_risk_answer(
-                question=cleaned_question,
-                risk_result=risk_result,
+            risk_answer, generation_status = (
+                self._generate_risk_answer(
+                    question=cleaned_question,
+                    risk_result=risk_result,
+                )
             )
 
             risk_sources = risk_result.get(
@@ -269,6 +334,13 @@ class FinancialAgent:
             if not isinstance(risk_sources, list):
                 risk_sources = []
 
+            final_risk_sources = (
+                self._rank_tool_sources(
+                    risk_sources=risk_sources,
+                    ranked_sources=ranked_sources,
+                )
+            )
+
             self._update_memory(
                 question=cleaned_question,
                 companies=resolved_companies,
@@ -277,7 +349,8 @@ class FinancialAgent:
 
             return self._build_response(
                 answer=risk_answer,
-                sources=risk_sources or sources,
+                sources=final_risk_sources,
+                retrieved_chunks=retrieved_chunks,
                 calculation=calculation_result,
                 comparison=comparison_result,
                 risk_analysis=risk_result,
@@ -292,6 +365,7 @@ class FinancialAgent:
                 retry_count=retry_count,
                 retrieval_sufficient=retrieval_sufficient,
                 deterministic_answer_used=False,
+                response_generation_status=generation_status,
             )
 
         report_context = self._build_context(
@@ -339,6 +413,8 @@ class FinancialAgent:
             user_prompt
         )
 
+        response_generation_status = "success"
+
         try:
             response = ollama.chat(
                 model=OLLAMA_MODEL,
@@ -358,7 +434,15 @@ class FinancialAgent:
                 response
             )
 
+            if answer in {
+                "The language model returned an unexpected response.",
+                "The language model returned an invalid answer.",
+            }:
+                response_generation_status = "failed"
+
         except Exception as error:
+            response_generation_status = "failed"
+
             answer = (
                 "The financial information was retrieved, but the "
                 "language model could not generate the final "
@@ -373,7 +457,8 @@ class FinancialAgent:
 
         return self._build_response(
             answer=answer,
-            sources=sources,
+            sources=ranked_sources,
+            retrieved_chunks=retrieved_chunks,
             calculation=calculation_result,
             comparison=comparison_result,
             risk_analysis=risk_result,
@@ -388,20 +473,27 @@ class FinancialAgent:
             retry_count=retry_count,
             retrieval_sufficient=retrieval_sufficient,
             deterministic_answer_used=False,
+            response_generation_status=response_generation_status,
         )
 
     def _generate_risk_answer(
         self,
         question: str,
         risk_result: dict[str, Any],
-    ) -> str:
+    ) -> tuple[str, str]:
         """
         Generate a focused risk answer using only structured output
         produced by RiskAnalysisTool.
+
+        Returns:
+        - generated answer
+        - response-generation status
         """
 
-        system_prompt = self.prompt_builder.build_system_prompt(
-            "risk_analysis"
+        system_prompt = (
+            self.prompt_builder.build_system_prompt(
+                "risk_analysis"
+            )
         )
 
         risk_context = risk_result.get(
@@ -443,21 +535,31 @@ class FinancialAgent:
                 ],
             )
 
-            return self._extract_llm_answer(
+            answer = self._extract_llm_answer(
                 response
             )
+
+            if answer in {
+                "The language model returned an unexpected response.",
+                "The language model returned an invalid answer.",
+            }:
+                return answer, "failed"
+
+            return answer, "success"
 
         except Exception as error:
             return (
                 "The risk evidence was extracted successfully, "
                 "but the final explanation could not be generated. "
-                f"Reason: {error}"
+                f"Reason: {error}",
+                "failed",
             )
 
-    @staticmethod
     def _build_response(
+        self,
         answer: str,
-        sources: list[dict],
+        sources: list[dict[str, Any]],
+        retrieved_chunks: list[dict[str, Any]],
         calculation: dict[str, Any] | None,
         comparison: dict[str, Any] | None,
         risk_analysis: dict[str, Any] | None,
@@ -472,14 +574,56 @@ class FinancialAgent:
         retry_count: int,
         retrieval_sufficient: bool,
         deterministic_answer_used: bool,
+        response_generation_status: str,
     ) -> dict[str, Any]:
         """
         Build one consistent agent response.
+
+        Confidence and execution trace are generated here so every
+        response path uses the same intelligence metadata.
         """
+
+        confidence = (
+            self.confidence_scoring_service.calculate(
+                retrieved_chunks=retrieved_chunks,
+                retrieval_sufficient=retrieval_sufficient,
+                retry_count=retry_count,
+                execution_result=execution_result,
+                deterministic_answer_used=(
+                    deterministic_answer_used
+                ),
+            )
+        )
+
+        execution_trace = (
+            self.execution_trace_service.build_trace(
+                selected_tool=selected_tool,
+                retrieval_plan=retrieval_plan,
+                retrieved_chunks=retrieved_chunks,
+                retry_performed=retry_performed,
+                retry_count=retry_count,
+                retrieval_sufficient=(
+                    retrieval_sufficient
+                ),
+                execution_result=execution_result,
+                deterministic_answer_used=(
+                    deterministic_answer_used
+                ),
+            )
+        )
+
+        execution_trace = (
+            self._apply_response_generation_status(
+                execution_trace=execution_trace,
+                status=response_generation_status,
+            )
+        )
 
         return {
             "answer": answer,
+            "confidence": confidence,
             "sources": sources,
+            "execution_trace": execution_trace,
             "calculation": calculation,
             "comparison": comparison,
             "risk_analysis": risk_analysis,
@@ -516,15 +660,197 @@ class FinancialAgent:
             "retry_performed": retry_performed,
             "retry_count": retry_count,
             "retrieval_sufficient": retrieval_sufficient,
-            "deterministic_answer_used": deterministic_answer_used,
+            "deterministic_answer_used": (
+                deterministic_answer_used
+            ),
         }
+
+    @staticmethod
+    def _apply_response_generation_status(
+        execution_trace: list[dict[str, Any]],
+        status: str,
+    ) -> list[dict[str, Any]]:
+        """
+        Correct the final trace step when response generation was
+        limited or failed.
+        """
+
+        if not execution_trace:
+            return execution_trace
+
+        normalized_status = (
+            status
+            if status in {
+                "success",
+                "limited",
+                "failed",
+            }
+            else "success"
+        )
+
+        final_step = execution_trace[-1]
+
+        if (
+            isinstance(final_step, dict)
+            and final_step.get("component")
+            == "response_generation"
+        ):
+            final_step["status"] = normalized_status
+
+            if normalized_status == "failed":
+                final_step["details"] = (
+                    "The system retrieved evidence, but final "
+                    "response generation failed."
+                )
+
+            elif normalized_status == "limited":
+                final_step["details"] = (
+                    "The system returned a limited response because "
+                    "relevant report evidence was unavailable."
+                )
+
+        return execution_trace
+
+    @staticmethod
+    def _rank_tool_sources(
+        risk_sources: list[dict[str, Any]],
+        ranked_sources: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Match RiskAnalysisTool sources with ranked retrieval sources.
+
+        This preserves the tool's verified source selection while
+        adding rank, retrieval distance, and relevance score when a
+        matching retrieved source exists.
+        """
+
+        if not risk_sources:
+            return ranked_sources
+
+        ranked_lookup: dict[
+            tuple[Any, ...],
+            dict[str, Any],
+        ] = {}
+
+        for source in ranked_sources:
+            key = (
+                source.get("company"),
+                source.get("source_file"),
+                source.get("page"),
+            )
+
+            ranked_lookup[key] = source
+
+        enriched_sources: list[
+            dict[str, Any]
+        ] = []
+
+        seen_sources: set[
+            tuple[Any, ...]
+        ] = set()
+
+        for source in risk_sources:
+            if not isinstance(source, dict):
+                continue
+
+            company = source.get(
+                "company"
+            )
+
+            source_file = source.get(
+                "source_file"
+            )
+
+            page = source.get(
+                "page"
+            )
+
+            key = (
+                company,
+                source_file,
+                page,
+            )
+
+            matched_source = ranked_lookup.get(
+                key
+            )
+
+            if matched_source:
+                enriched_source = {
+                    **source,
+                    "relevance_score": (
+                        matched_source.get(
+                            "relevance_score"
+                        )
+                    ),
+                    "retrieval_distance": (
+                        matched_source.get(
+                            "retrieval_distance"
+                        )
+                    ),
+                    "rank": matched_source.get(
+                        "rank"
+                    ),
+                }
+            else:
+                enriched_source = {
+                    **source,
+                    "relevance_score": None,
+                    "retrieval_distance": None,
+                    "rank": None,
+                }
+
+            duplicate_key = (
+                enriched_source.get(
+                    "company"
+                ),
+                enriched_source.get(
+                    "ticker"
+                ),
+                enriched_source.get(
+                    "source_file"
+                ),
+                enriched_source.get(
+                    "fiscal_year"
+                ),
+                enriched_source.get(
+                    "document_type"
+                ),
+                enriched_source.get(
+                    "page"
+                ),
+            )
+
+            if duplicate_key in seen_sources:
+                continue
+
+            enriched_sources.append(
+                enriched_source
+            )
+
+            seen_sources.add(
+                duplicate_key
+            )
+
+        enriched_sources.sort(
+            key=lambda source: (
+                source.get("rank")
+                if isinstance(
+                    source.get("rank"),
+                    int,
+                )
+                else float("inf")
+            )
+        )
+
+        return enriched_sources
 
     @staticmethod
     def _extract_calculation_result(
         execution_result: dict[str, Any],
     ) -> dict[str, Any] | None:
         """
-        Extract the FinancialCalculatorTool result.
+        Extract the FinancialCalculatorTool calculation result.
         """
 
         tool_outputs = execution_result.get(
@@ -532,11 +858,19 @@ class FinancialAgent:
             [],
         )
 
+        if not isinstance(tool_outputs, list):
+            return None
+
         for step in tool_outputs:
+            if not isinstance(step, dict):
+                continue
+
             if step.get("tool") != "financial_calculator":
                 continue
 
-            output = step.get("output")
+            output = step.get(
+                "output"
+            )
 
             if not isinstance(output, dict):
                 continue
@@ -563,11 +897,19 @@ class FinancialAgent:
             [],
         )
 
+        if not isinstance(tool_outputs, list):
+            return None
+
         for step in tool_outputs:
+            if not isinstance(step, dict):
+                continue
+
             if step.get("tool") != "company_comparison":
                 continue
 
-            output = step.get("output")
+            output = step.get(
+                "output"
+            )
 
             if isinstance(output, dict):
                 return output
@@ -587,11 +929,19 @@ class FinancialAgent:
             [],
         )
 
+        if not isinstance(tool_outputs, list):
+            return None
+
         for step in tool_outputs:
+            if not isinstance(step, dict):
+                continue
+
             if step.get("tool") != "risk_analysis":
                 continue
 
-            output = step.get("output")
+            output = step.get(
+                "output"
+            )
 
             if isinstance(output, dict):
                 return output
@@ -737,7 +1087,7 @@ class FinancialAgent:
 
     @staticmethod
     def _build_context(
-        retrieved_chunks: list[dict],
+        retrieved_chunks: list[dict[str, Any]],
     ) -> str:
         """
         Convert retrieved chunks into structured report context.
@@ -749,15 +1099,24 @@ class FinancialAgent:
             retrieved_chunks,
             start=1,
         ):
+            if not isinstance(chunk, dict):
+                continue
+
             metadata = chunk.get(
                 "metadata",
                 {},
             )
 
+            if not isinstance(metadata, dict):
+                metadata = {}
+
             content = chunk.get(
                 "content",
                 "",
             )
+
+            if not isinstance(content, str):
+                content = str(content)
 
             company = metadata.get(
                 "company",
@@ -818,87 +1177,6 @@ class FinancialAgent:
         )
 
     @staticmethod
-    def _extract_sources(
-        retrieved_chunks: list[dict],
-    ) -> list[dict]:
-        """
-        Extract unique verified source references.
-        """
-
-        sources: list[dict] = []
-        seen_sources: set[tuple] = set()
-
-        for chunk in retrieved_chunks:
-            metadata = chunk.get(
-                "metadata",
-                {},
-            )
-
-            company = metadata.get(
-                "company",
-                "Unknown company",
-            )
-
-            ticker = metadata.get(
-                "ticker",
-                "Unknown ticker",
-            )
-
-            source_file = metadata.get(
-                "source_file",
-                "Unknown source",
-            )
-
-            fiscal_year = metadata.get(
-                "fiscal_year",
-                "Unknown year",
-            )
-
-            document_type = metadata.get(
-                "document_type",
-                "Unknown document type",
-            )
-
-            stored_page = metadata.get(
-                "page",
-                "Unknown page",
-            )
-
-            display_page = stored_page
-
-            if isinstance(stored_page, int):
-                display_page = stored_page + 1
-
-            source_key = (
-                company,
-                ticker,
-                source_file,
-                fiscal_year,
-                document_type,
-                display_page,
-            )
-
-            if source_key in seen_sources:
-                continue
-
-            sources.append(
-                {
-                    "company": company,
-                    "ticker": ticker,
-                    "source_file": source_file,
-                    "fiscal_year": fiscal_year,
-                    "document_type": document_type,
-                    "page": display_page,
-                }
-            )
-
-            seen_sources.add(
-                source_key
-            )
-
-        return sources
-
-    @staticmethod
     def _extract_llm_answer(
         response: Any,
     ) -> str:
@@ -934,7 +1212,14 @@ class FinancialAgent:
                 "The language model returned an invalid answer."
             )
 
-        return answer.strip()
+        cleaned_answer = answer.strip()
+
+        if not cleaned_answer:
+            return (
+                "The language model returned an invalid answer."
+            )
+
+        return cleaned_answer
 
     @staticmethod
     def _empty_question_response() -> dict[str, Any]:
@@ -944,7 +1229,28 @@ class FinancialAgent:
 
         return {
             "answer": "Please enter a financial question.",
+            "confidence": {
+                "score": 0.0,
+                "percentage": 0.0,
+                "level": "low",
+                "reasons": [
+                    "No valid financial question was provided."
+                ],
+                "components": {
+                    "retrieval_relevance": 0.0,
+                    "evidence_coverage": 0.0,
+                    "retrieval_sufficiency": 0.0,
+                    "tool_execution": 0.0,
+                    "deterministic_support": 0.0,
+                    "retry_stability": 0.0,
+                },
+                "method": (
+                    "Evidence-quality heuristic based on retrieval, "
+                    "tool execution, and deterministic support."
+                ),
+            },
             "sources": [],
+            "execution_trace": [],
             "calculation": None,
             "comparison": None,
             "risk_analysis": None,
@@ -1016,6 +1322,11 @@ if __name__ == "__main__":
             f"{result['deterministic_answer_used']}"
         )
 
+        print(
+            "\nConfidence:\n"
+            f"{result.get('confidence')}"
+        )
+
         print("\nExecution plan:")
 
         for step_number, tool_name in enumerate(
@@ -1027,6 +1338,19 @@ if __name__ == "__main__":
         ):
             print(
                 f"{step_number}. {tool_name}"
+            )
+
+        print("\nExecution trace:")
+
+        for trace_step in result.get(
+            "execution_trace",
+            [],
+        ):
+            print(
+                f"{trace_step.get('step')}. "
+                f"{trace_step.get('component')} | "
+                f"{trace_step.get('status')} | "
+                f"{trace_step.get('details')}"
             )
 
         print("\nExecuted tools:")
@@ -1063,14 +1387,17 @@ if __name__ == "__main__":
             f"{result['answer']}"
         )
 
-        print("\nSources:")
+        print("\nRanked sources:")
 
         for source in result.get(
             "sources",
             [],
         ):
             print(
-                f"- {source.get('company')} | "
+                f"- Rank {source.get('rank')} | "
+                f"{source.get('company')} | "
                 f"{source.get('source_file')} | "
-                f"Page {source.get('page')}"
+                f"Page {source.get('page')} | "
+                f"Relevance "
+                f"{source.get('relevance_score')}"
             )
