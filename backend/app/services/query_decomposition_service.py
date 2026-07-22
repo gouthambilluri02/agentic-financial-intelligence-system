@@ -70,9 +70,7 @@ class QueryDecompositionService:
             else ""
         )
 
-        safe_companies = self._normalize_companies(
-            companies
-        )
+        safe_companies = self._normalize_companies(companies)
 
         calculation_requested = self._matches_any(
             normalized_question,
@@ -172,13 +170,8 @@ class QueryDecompositionService:
             if normalized_key in seen_companies:
                 continue
 
-            normalized_companies.append(
-                cleaned_company
-            )
-
-            seen_companies.add(
-                normalized_key
-            )
+            normalized_companies.append(cleaned_company)
+            seen_companies.add(normalized_key)
 
         return normalized_companies
 
@@ -214,8 +207,7 @@ class QueryDecompositionService:
 
         metric_name = (
             metric.replace("_", " ")
-            if isinstance(metric, str)
-            and metric.strip()
+            if isinstance(metric, str) and metric.strip()
             else "requested financial metric"
         )
 
