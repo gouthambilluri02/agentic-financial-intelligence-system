@@ -12,6 +12,10 @@ services:
     env_file:
       - .env
 
+    environment:
+      OLLAMA_MODEL: qwen2.5:7b
+      OLLAMA_HOST: http://host.docker.internal:11434
+
     volumes:
       - .:/app
 
