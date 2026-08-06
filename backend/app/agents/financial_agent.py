@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import ollama
@@ -30,7 +31,15 @@ from backend.app.services.tool_router import ToolRouter
 from backend.app.tools.tool_registry import ToolRegistry
 
 
-OLLAMA_MODEL = "qwen2.5:7b"
+OLLAMA_MODEL = os.getenv(
+    "OLLAMA_MODEL",
+    "qwen2.5:7b",
+)
+
+OLLAMA_HOST = os.getenv(
+    "OLLAMA_HOST",
+    "http://127.0.0.1:11434",
+)
 
 
 class FinancialAgent:
@@ -53,6 +62,10 @@ class FinancialAgent:
     """
 
     def __init__(self) -> None:
+        self.ollama_client = ollama.Client(
+            host=OLLAMA_HOST,
+        )
+
         self.company_detector = CompanyDetector()
         self.intent_detector = IntentDetector()
         self.metric_detector = FinancialMetricDetector()
@@ -432,7 +445,7 @@ class FinancialAgent:
         response_generation_status = "success"
 
         try:
-            response = ollama.chat(
+            response = self.ollama_client.chat(
                 model=OLLAMA_MODEL,
                 messages=[
                     {
@@ -537,7 +550,7 @@ class FinancialAgent:
         )
 
         try:
-            response = ollama.chat(
+            response = self.ollama_client.chat(
                 model=OLLAMA_MODEL,
                 messages=[
                     {
