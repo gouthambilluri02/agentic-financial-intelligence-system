@@ -31,37 +31,76 @@ The application features a modern React dashboard, a FastAPI backend, ChromaDB v
 
 ---
 
+
 # Architecture
 
-```
-                React + TypeScript
-                        │
-                        ▼
-                 FastAPI Backend
-                        │
-                        ▼
-             Financial Intelligence Agent
-                        │
-      ┌─────────────────┼─────────────────┐
-      │                 │                 │
-      ▼                 ▼                 ▼
- Revenue Tool     Risk Analysis     Calculator Tool
-      │                 │                 │
-      └──────────────┬────────────────────┘
-                     ▼
-          Retrieval Orchestrator
-                     │
-          ChromaDB Vector Database
-                     │
-         Financial Reports (10-K PDFs)
-                     │
-                     ▼
-           Ollama (Qwen2.5:7B)
+```mermaid
+flowchart TD
+
+    U[User] --> FE[React + TypeScript Frontend]
+
+    FE -->|POST /api/v1/query| API[FastAPI API Layer]
+
+    API --> AGENT[Financial Intelligence Agent]
+
+    AGENT --> CD[Company Detector]
+    AGENT --> ID[Intent Detector]
+    AGENT --> MD[Financial Metric Detector]
+
+    CD --> ROUTER[Tool Router]
+    ID --> ROUTER
+    MD --> ROUTER
+
+    ROUTER --> PLAN[Execution Planner]
+
+    PLAN --> EXEC[Tool Executor]
+
+    EXEC --> CALC[Financial Calculator]
+    EXEC --> COMP[Company Comparison Tool]
+    EXEC --> RISK[Risk Analysis Tool]
+    EXEC --> RET[Document Retrieval]
+
+    RET --> ORCH[Retrieval Orchestrator]
+
+    ORCH --> VECTOR[ChromaDB Vector Database]
+
+    DOCS[Financial Reports (10-K PDFs)] --> VECTOR
+
+    VECTOR --> ORCH
+
+    ORCH --> SOURCES[Source Ranking]
+
+    SOURCES --> AGENT
+
+    CALC --> AGENT
+    COMP --> AGENT
+    RISK --> AGENT
+
+    AGENT --> DET[Deterministic Response Builder]
+
+    AGENT --> LLM[Ollama (Qwen2.5:7B)]
+
+    DET --> RESPONSE[Final Response]
+    LLM --> RESPONSE
+
+    RESPONSE --> TRACE[Execution Trace]
+
+    TRACE --> API
+
+    API --> FE
+
+    FE --> RESULT[Dashboard]
 ```
 
 ---
 
 # Tech Stack
+---
+
+
+---
+
+
 
 ## Frontend
 
@@ -157,10 +196,34 @@ What cybersecurity risks are mentioned in Microsoft's report?
 
 > Screenshots will be added soon.
 
-- Dashboard
-- Revenue Comparison
-- Risk Analysis
-- Source Viewer
+## Dashboard
+
+![Dashboard](docs/images/landing-page.png)
+
+---
+
+## Revenue Comparison
+
+![Revenue Comparison](docs/images/revenue-comparison.png)
+
+---
+
+## Risk Analysis
+
+![Risk Analysis](docs/images/risk-analysis.png)
+
+---
+
+## Source Citations
+
+![Sources](docs/images/sources-panel.png)
+
+---
+
+## System Architecture
+
+![Architecture](docs/images/architecture.png)
+
 
 ---
 
