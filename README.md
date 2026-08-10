@@ -1,4 +1,11 @@
 # 🚀 Agentic Financial Intelligence System
+![Python](https://img.shields.io/badge/Python-3.11+-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688)
+![React](https://img.shields.io/badge/React-TypeScript-61DAFB)
+![ChromaDB](https://img.shields.io/badge/Vector_DB-ChromaDB-orange)
+![Ollama](https://img.shields.io/badge/LLM-Ollama-black)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED)
+![License](https://img.shields.io/badge/License-MIT-green)
 
 > An enterprise-grade AI-powered financial intelligence platform that combines Retrieval-Augmented Generation (RAG), intelligent tool routing, semantic document search, and local LLM inference to analyze financial reports and answer complex financial questions.
 
@@ -33,6 +40,7 @@ The application features a modern React dashboard, a FastAPI backend, ChromaDB v
 
 
 # Architecture
+📄 [View the editable Draw.io architecture](docs/architecture.drawio)
 
 ```mermaid
 flowchart TD
