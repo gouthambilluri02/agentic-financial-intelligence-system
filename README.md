@@ -212,7 +212,7 @@ What cybersecurity risks are mentioned in Microsoft's report?
 
 ![Risk Analysis](docs/images/risk-analysis.png)
 
----
+
 
 ## Source Citations
 
