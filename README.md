@@ -42,41 +42,43 @@ The application features a modern React dashboard, a FastAPI backend, ChromaDB v
 # Architecture
 📄 [View the editable Draw.io architecture](docs/architecture.drawio)
 
+![System Architecture](docs/images/architecture.png)
+
 ```mermaid
 flowchart TD
 
-    U[User] --> FE[React + TypeScript Frontend]
+    U["User"] --> FE["React + TypeScript Frontend"]
 
-    FE -->|POST /api/v1/query| API[FastAPI API Layer]
+    FE -->|POST /api/v1/query| API["FastAPI API Layer"]
 
-    API --> AGENT[Financial Intelligence Agent]
+    API --> AGENT["Financial Intelligence Agent"]
 
-    AGENT --> CD[Company Detector]
-    AGENT --> ID[Intent Detector]
-    AGENT --> MD[Financial Metric Detector]
+    AGENT --> CD["Company Detector"]
+    AGENT --> ID["Intent Detector"]
+    AGENT --> MD["Financial Metric Detector"]
 
-    CD --> ROUTER[Tool Router]
+    CD --> ROUTER["Tool Router"]
     ID --> ROUTER
     MD --> ROUTER
 
-    ROUTER --> PLAN[Execution Planner]
+    ROUTER --> PLAN["Execution Planner"]
 
-    PLAN --> EXEC[Tool Executor]
+    PLAN --> EXEC["Tool Executor"]
 
-    EXEC --> CALC[Financial Calculator]
-    EXEC --> COMP[Company Comparison Tool]
-    EXEC --> RISK[Risk Analysis Tool]
-    EXEC --> RET[Document Retrieval]
+    EXEC --> CALC["Financial Calculator"]
+    EXEC --> COMP["Company Comparison Tool"]
+    EXEC --> RISK["Risk Analysis Tool"]
+    EXEC --> RET["Document Retrieval"]
 
-    RET --> ORCH[Retrieval Orchestrator]
+    RET --> ORCH["Retrieval Orchestrator"]
 
-    ORCH --> VECTOR[ChromaDB Vector Database]
+    ORCH --> VECTOR["ChromaDB Vector Database"]
 
-    DOCS[Financial Reports (10-K PDFs)] --> VECTOR
+    DOCS["Financial Reports - 10-K PDFs"] --> VECTOR
 
     VECTOR --> ORCH
 
-    ORCH --> SOURCES[Source Ranking]
+    ORCH --> SOURCES["Source Ranking"]
 
     SOURCES --> AGENT
 
@@ -84,20 +86,19 @@ flowchart TD
     COMP --> AGENT
     RISK --> AGENT
 
-    AGENT --> DET[Deterministic Response Builder]
+    AGENT --> DET["Deterministic Response Builder"]
 
-    AGENT --> LLM[Ollama (Qwen2.5:7B)]
+    AGENT --> LLM["Ollama - Qwen2.5:7B"]
 
-    DET --> RESPONSE[Final Response]
+    DET --> RESPONSE["Final Response"]
     LLM --> RESPONSE
 
-    RESPONSE --> TRACE[Execution Trace]
+    RESPONSE --> TRACE["Execution Trace"]
 
     TRACE --> API
-
     API --> FE
 
-    FE --> RESULT[Dashboard]
+    FE --> RESULT["Dashboard"]
 ```
 
 ---
